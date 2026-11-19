@@ -1,0 +1,11 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      INVENTORY_DB: /data/inventory.sqlite3
+    volumes:
+      - inventory_data:/data
+volumes:
+  inventory_data:
