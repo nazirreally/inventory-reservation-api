@@ -127,6 +127,16 @@ requirements.txt
 requirements-dev.txt
 ```
 
+## Concurrent correctness tests
+
+The repository includes a file-backed SQLite contention suite using `ThreadPoolExecutor` and synchronized request starts. It verifies that 20 simultaneous checkouts for 5 units result in exactly 5 successful holds, 12 identical retries return one reservation, 10 simultaneous confirmations deduct stock only once, and 8 concurrent releases remain idempotent. These are correctness-focused contention checks, **not** throughput benchmarks or proof of distributed scalability.
+
+```bash
+pytest -q tests/test_api.py tests/test_concurrency.py
+```
+
+The command above passed locally with **14 tests** on 20 November 2026. The separate reconciliation test module was not included in that local run. The GitHub Actions workflow additionally runs the full test suite on Python 3.11 and 3.12, checks Python compilation, and builds the Docker image; remote outcomes are not yet verified.
+
 ## Testing and verification
 
 ```bash
