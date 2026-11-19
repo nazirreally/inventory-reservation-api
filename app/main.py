@@ -7,6 +7,7 @@ from contextlib import contextmanager, asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel, Field
+from .audit import reconcile
 
 DB_PATH = os.environ.get('INVENTORY_DB', 'inventory.sqlite3')
 @asynccontextmanager
@@ -138,3 +139,12 @@ def release(rid: str):
         if row['status'] == 'released':
             db.commit(); return {'id':rid,'status':'released'}
         db.rollback(); raise HTTPException(409, f"Cannot release {row['status']} reservation")
+
+@app.get('/health/inventory')
+def inventory_health():
+    """Read-only inventory reconciliation; suitable for internal operations."""
+    with connection() as db:
+        db.execute('BEGIN')
+        report = reconcile(db, int(time.time()))
+        db.commit()
+        return report
