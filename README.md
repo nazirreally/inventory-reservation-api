@@ -119,6 +119,7 @@ app/
 tests/
   test_api.py         Reservation and expiry integration tests
   test_audit.py       Reconciliation unit tests
+  test_concurrency.py  Concurrent hold, confirm and release checks
 .github/workflows/
   ci.yml              Pytest matrix
 Dockerfile
@@ -135,7 +136,7 @@ The repository includes a file-backed SQLite contention suite using `ThreadPoolE
 pytest -q tests/test_api.py tests/test_concurrency.py
 ```
 
-The command above passed locally with **14 tests** on 20 November 2026. The separate reconciliation test module was not included in that local run. The GitHub Actions workflow additionally runs the full test suite on Python 3.11 and 3.12, checks Python compilation, and builds the Docker image; remote outcomes are not yet verified.
+The GitHub Actions workflow runs the full test suite on Python 3.11 and 3.12, checks Python compilation, and builds the Docker image. The [20 November 2026 workflow run](https://github.com/nazirreally/inventory-reservation-api/actions/runs/44677807815) completed successfully. Earlier failed runs remain visible in the Actions history.
 
 ## Testing and verification
 
@@ -144,7 +145,7 @@ pytest -q
 python -m compileall -q app
 ```
 
-Five reconciliation unit tests were executed locally before publishing this upgrade. GitHub Actions is configured, but passing remote CI must be confirmed on the [Actions page](https://github.com/nazirreally/inventory-reservation-api/actions).
+For ongoing status, refer to [GitHub Actions](https://github.com/nazirreally/inventory-reservation-api/actions). A successful local or CI run establishes test results for that revision, not production-readiness.
 
 ## Engineering trade-offs
 
