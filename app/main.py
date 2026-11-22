@@ -141,6 +141,23 @@ def release(rid: str):
             db.commit(); return {'id':rid,'status':'released'}
         db.rollback(); raise HTTPException(409, f"Cannot release {row['status']} reservation")
 
+@app.get('/reservations/{rid}')
+def get_reservation(rid: str):
+    """Read a reservation without mutating its stored lifecycle state.
+
+    Expired active holds are represented as expired in the response, even
+    before a subsequent write materializes their expiration in SQLite.
+    """
+    with connection() as db:
+        row = db.execute('SELECT * FROM reservations WHERE id=?', (rid,)).fetchone()
+        if row is None:
+            raise HTTPException(404, 'Unknown reservation')
+        result = dict(row)
+        if result['status'] == 'active' and result['expires_at'] <= int(time.time()):
+            result['status'] = 'expired'
+        return result
+
+
 @app.get('/health/inventory')
 def inventory_health():
     """Read-only inventory reconciliation; suitable for internal operations."""
