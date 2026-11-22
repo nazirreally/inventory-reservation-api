@@ -44,6 +44,7 @@ flowchart LR
 - **Release:** returns unconfirmed held units to availability; an already-expired hold cannot be released as if it were active.
 - **Inventory protection:** rejects stock updates below currently active holds.
 - **Operational reconciliation:** reports per-SKU stock, live holds, available units, and invariant violations.
+- **Reservation status lookup:** read a hold or its terminal state by ID; expired active holds are shown as expired without changing the database.
 
 ## Run locally
 
@@ -81,6 +82,8 @@ curl -X POST http://localhost:8000/reservations \
   -d '{"sku":"coffee","quantity":2,"ttl_seconds":900}'
 
 curl http://localhost:8000/inventory/coffee
+# Substitute the ID returned by POST /reservations:
+curl http://localhost:8000/reservations/REPLACE_WITH_RESERVATION_ID
 curl http://localhost:8000/health/inventory
 ```
 
@@ -93,6 +96,7 @@ The available stock after the hold is **8**. The reconciliation endpoint reports
 | `PUT` | `/inventory` | Create/update physical stock |
 | `GET` | `/inventory/{sku}` | Get available stock |
 | `POST` | `/reservations` | Create idempotent hold |
+| `GET` | `/reservations/{id}` | Read reservation status, with effective expiration applied in the response |
 | `POST` | `/reservations/{id}/confirm` | Confirm and deduct stock once |
 | `POST` | `/reservations/{id}/release` | Release an active hold |
 | `GET` | `/health/inventory` | Read-only per-SKU reconciliation |
@@ -117,7 +121,7 @@ app/
   main.py             FastAPI endpoints, transactional lifecycle
   audit.py            Read-only stock reconciliation
 tests/
-  test_api.py         Reservation and expiry integration tests
+  test_api.py         Reservation and expiry integration tests, status lookup
   test_audit.py       Reconciliation unit tests
   test_concurrency.py  Concurrent hold, confirm and release checks
 .github/workflows/
@@ -175,3 +179,13 @@ This is a **portfolio reference implementation**, not an internet-facing product
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## November 22, 2026 — source recovery and status inspection
+
+A source review found that `app/main.py` had a malformed Pydantic `ReserveInput.sku` pattern and an accidentally duplicated module tail. Both are now removed, restoring a single coherent FastAPI module. This is a correctness repair, not a new repository.
+
+The API also implements `GET /reservations/{id}`, allowing a checkout client to inspect a hold's current effective state without triggering a database write. For an `active` reservation past its expiration timestamp, the response reports `expired`; lazy materialization of the persisted status still occurs on later writes. Unknown IDs return 404. Three integration tests cover active-to-confirmed lookup, expiry without writes, and unknown IDs.
+
+**Verification for this revision:** Code and tests are committed. The updated full suite and GitHub Actions outcome have not yet been verified; consult the [Actions page](https://github.com/nazirreally/inventory-reservation-api/actions) for the latest workflow result. No claim of a green build is made for this commit.
+
+**Tradeoff:** The read endpoint reveals reservation metadata to anyone who knows an ID. This portfolio demo is not suitable for a public deployment without authentication and tenant-scoped authorization.
