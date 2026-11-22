@@ -77,3 +77,51 @@ def test_released_idempotency(client):
     rid=reserve(client).json()['id']
     client.post(f'/reservations/{rid}/release')
     assert client.post(f'/reservations/{rid}/release').status_code==200
+
+def test_idempotency_rejects_different_ttl(client):
+    stock(client)
+    first = client.post('/reservations',
+        json={'sku':'widget','quantity':2,'ttl_seconds':60},
+        headers={'Idempotency-Key':'same-checkout'})
+    assert first.status_code == 201
+    replay = client.post('/reservations',
+        json={'sku':'widget','quantity':2,'ttl_seconds':120},
+        headers={'Idempotency-Key':'same-checkout'})
+    assert replay.status_code == 409
+    assert client.get('/inventory/widget').json()['available'] == 3
+
+
+def test_idempotency_same_ttl_replays_original(client):
+    stock(client)
+    payload = {'sku':'widget','quantity':2,'ttl_seconds':60}
+    headers = {'Idempotency-Key':'same-checkout'}
+    first = client.post('/reservations', json=payload, headers=headers)
+    second = client.post('/reservations', json=payload, headers=headers)
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert first.json() == second.json()
+
+
+def test_invalid_reservation_sku_is_rejected(client):
+    stock(client)
+    response = client.post('/reservations',
+        json={'sku':'../widget','quantity':1},
+        headers={'Idempotency-Key':'invalid-sku'})
+    assert response.status_code == 422
+
+
+def test_expired_hold_cannot_be_released_as_active(client, monkeypatch):
+    import app.main as m
+    stock(client)
+    now = int(m.time.time())
+    monkeypatch.setattr(m.time, 'time', lambda: now)
+    response = client.post('/reservations',
+        json={'sku':'widget','quantity':2,'ttl_seconds':1},
+        headers={'Idempotency-Key':'expire-release'})
+    assert response.status_code == 201
+    rid = response.json()['id']
+    monkeypatch.setattr(m.time, 'time', lambda: now + 2)
+    released = client.post(f'/reservations/{rid}/release')
+    assert released.status_code == 409
+    assert 'expired' in released.json()['detail']
+    assert client.get('/inventory/widget').json()['available'] == 5
