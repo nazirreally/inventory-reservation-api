@@ -125,3 +125,40 @@ def test_expired_hold_cannot_be_released_as_active(client, monkeypatch):
     assert released.status_code == 409
     assert 'expired' in released.json()['detail']
     assert client.get('/inventory/widget').json()['available'] == 5
+
+
+def test_reservation_status_endpoint_reads_active_and_confirmed(client):
+    stock(client)
+    created = reserve(client, key='status-1').json()
+    rid = created['id']
+    active = client.get(f'/reservations/{rid}')
+    assert active.status_code == 200
+    assert active.json()['status'] == 'active'
+    assert active.json()['quantity'] == 2
+    assert client.post(f'/reservations/{rid}/confirm').status_code == 200
+    confirmed = client.get(f'/reservations/{rid}')
+    assert confirmed.status_code == 200
+    assert confirmed.json()['status'] == 'confirmed'
+    assert client.get('/inventory/widget').json()['available'] == 3
+
+
+def test_status_endpoint_reports_expiry_without_writing(client, monkeypatch):
+    import app.main as m
+    stock(client)
+    now = int(m.time.time())
+    monkeypatch.setattr(m.time, 'time', lambda: now)
+    response = client.post('/reservations',
+        json={'sku':'widget','quantity':3,'ttl_seconds':1},
+        headers={'Idempotency-Key':'status-expiry'})
+    assert response.status_code == 201
+    rid = response.json()['id']
+    monkeypatch.setattr(m.time, 'time', lambda: now + 2)
+    assert client.get(f'/reservations/{rid}').json()['status'] == 'expired'
+    with m.connection() as db:
+        stored = db.execute('SELECT status FROM reservations WHERE id=?', (rid,)).fetchone()
+    assert stored['status'] == 'active'
+    assert client.get('/inventory/widget').json()['available'] == 5
+
+
+def test_status_endpoint_unknown_reservation(client):
+    assert client.get('/reservations/not-found').status_code == 404
