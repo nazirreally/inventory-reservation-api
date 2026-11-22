@@ -38,10 +38,10 @@ flowchart LR
 ## Implemented capabilities
 
 - **Atomic reservation:** a write transaction checks available units and inserts the hold.
-- **Retry safety:** repeated requests with the same idempotency key return the original reservation.
+- **Retry safety:** repeated requests with the same idempotency key return the original reservation only when SKU, quantity **and hold TTL** match. Changed requests return HTTP 409.
 - **Hold expiration:** availability ignores expired holds; write operations also mark them expired.
 - **Confirmation:** reduces physical stock once and transitions a reservation to confirmed.
-- **Release:** returns unconfirmed held units to availability.
+- **Release:** returns unconfirmed held units to availability; an already-expired hold cannot be released as if it were active.
 - **Inventory protection:** rejects stock updates below currently active holds.
 - **Operational reconciliation:** reports per-SKU stock, live holds, available units, and invariant violations.
 
@@ -151,8 +151,14 @@ For ongoing status, refer to [GitHub Actions](https://github.com/nazirreally/inv
 
 1. **SQLite vs PostgreSQL:** WAL and immediate write locks provide an easy-to-run correctness demonstration; PostgreSQL would be preferable for horizontally scaled production workloads.
 2. **Lazy expiry vs scheduler:** no background service is needed, but expired statuses are materialized only during certain writes; availability always uses expiration timestamps.
-3. **Global idempotency keys:** sufficient for a single tenant; a production system should scope keys by tenant and request fingerprint, including TTL.
+3. **Global idempotency keys:** SKU, quantity and TTL are compared on retry. A production system should scope keys by tenant, normalize request fingerprints, define key retention, and document replay semantics after expiry.
 4. **Read-only reconciliation:** reports invariant violations but intentionally does not modify inventory.
+
+## November 22, 2026 — reservation correctness hardening
+
+This revision closes three lifecycle edge cases: (1) reusing an idempotency key with a different TTL now returns **409**, rather than silently replaying an incompatible hold; (2) reservation SKU inputs now share the stock-write SKU format and length contract; and (3) release requests against expired holds return **409**, rather than reporting a successful release. Four regression tests cover TTL mismatch, exact replay, invalid SKU, and expiry-versus-release behavior.
+
+**Verification status:** The changes are committed and GitHub Actions is configured to run the test suite. The new revision has not been independently executed locally in this run; do not infer CI success until the latest run is green. See [Actions](https://github.com/nazirreally/inventory-reservation-api/actions).
 
 ## Security and limitations
 
