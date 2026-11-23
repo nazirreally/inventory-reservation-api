@@ -162,3 +162,56 @@ def test_status_endpoint_reports_expiry_without_writing(client, monkeypatch):
 
 def test_status_endpoint_unknown_reservation(client):
     assert client.get('/reservations/not-found').status_code == 404
+
+
+def test_cart_preflight_merges_duplicate_skus_and_respects_holds(client):
+    stock(client, 5)
+    assert reserve(client, key='cart-hold', qty=2).status_code == 201
+    payload = {'items': [{'sku': 'widget', 'quantity': 2},
+                         {'sku': 'widget', 'quantity': 2}]}
+    response = client.post('/inventory/availability', json=payload)
+    assert response.status_code == 200
+    body = response.json()
+    assert body['can_fulfill'] is False
+    assert body['items'] == [{'sku': 'widget', 'requested': 4,
+                               'available': 3, 'sufficient': False, 'exists': True}]
+    assert client.get('/inventory/widget').json()['available'] == 3
+
+
+def test_cart_preflight_handles_unknown_sku_without_failing_whole_cart(client):
+    stock(client, 8)
+    response = client.post('/inventory/availability', json={'items': [
+        {'sku': 'widget', 'quantity': 3}, {'sku': 'missing', 'quantity': 1}]})
+    assert response.status_code == 200
+    body = response.json()
+    assert body['can_fulfill'] is False
+    assert body['items'][0]['sufficient'] is True
+    assert body['items'][1]['exists'] is False
+    assert body['items'][1]['available'] == 0
+
+
+def test_cart_preflight_validation(client):
+    for payload in [
+        {'items': []},
+        {'items': [{'sku': '../unsafe', 'quantity': 1}]},
+        {'items': [{'sku': 'widget', 'quantity': 0}]},
+        {'items': [{'sku': 'widget', 'quantity': 1}] * 101},
+    ]:
+        assert client.post('/inventory/availability', json=payload).status_code == 422
+
+
+def test_cart_preflight_expired_holds_are_not_counted(client, monkeypatch):
+    import app.main as m
+    stock(client, 5)
+    now = int(m.time.time())
+    monkeypatch.setattr(m.time, 'time', lambda: now)
+    created = client.post('/reservations', json={
+        'sku': 'widget', 'quantity': 4, 'ttl_seconds': 1
+    }, headers={'Idempotency-Key': 'preflight-expiry'})
+    assert created.status_code == 201
+    monkeypatch.setattr(m.time, 'time', lambda: now + 2)
+    response = client.post('/inventory/availability', json={
+        'items': [{'sku': 'widget', 'quantity': 5}]})
+    assert response.status_code == 200
+    assert response.json()['can_fulfill'] is True
+    assert response.json()['items'][0]['available'] == 5
