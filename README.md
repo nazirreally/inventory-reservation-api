@@ -44,6 +44,7 @@ flowchart LR
 - **Release:** returns unconfirmed held units to availability; an already-expired hold cannot be released as if it were active.
 - **Inventory protection:** rejects stock updates below currently active holds.
 - **Operational reconciliation:** reports per-SKU stock, live holds, available units, and invariant violations.
+- **Multi-SKU cart preflight:** checks up to 100 requested lines in one consistent SQLite read snapshot, aggregates duplicate SKUs, reports missing SKUs without failing the entire request, and explicitly does not reserve stock.
 - **Reservation status lookup:** read a hold or its terminal state by ID; expired active holds are shown as expired without changing the database.
 
 ## Run locally
@@ -89,12 +90,25 @@ curl http://localhost:8000/health/inventory
 
 The available stock after the hold is **8**. The reconciliation endpoint reports stock 10, held 2, available 8, and no oversubscription. Confirm or release the reservation using its returned ID.
 
+## Cart preflight example
+
+Before attempting payment, a checkout can request an **advisory snapshot** of all required products:
+
+```bash
+curl -X POST http://localhost:8000/inventory/availability \\
+  -H 'Content-Type: application/json' \\
+  -d '{"items":[{"sku":"coffee","quantity":2},{"sku":"coffee","quantity":1},{"sku":"tea","quantity":1}]}'
+```
+
+The response includes `can_fulfill`, an `as_of` Unix timestamp and one row per distinct SKU with `requested`, `available`, `sufficient` and `exists`. Duplicate cart lines are summed, so the example requests **3 coffee** and **1 tea**. Unknown SKUs report `exists:false` and `available:0`. The request allows 1–100 lines, and each quantity must be positive. **This endpoint does not hold inventory**: another checkout can consume units after the snapshot. Use the atomic reservation endpoint for an actual hold.
+
 ## API reference
 
 | Method | Path | Behavior |
 |---|---|---|
 | `PUT` | `/inventory` | Create/update physical stock |
 | `GET` | `/inventory/{sku}` | Get available stock |
+| `POST` | `/inventory/availability` | Advisory multi-SKU cart availability snapshot (no reservation) |
 | `POST` | `/reservations` | Create idempotent hold |
 | `GET` | `/reservations/{id}` | Read reservation status, with effective expiration applied in the response |
 | `POST` | `/reservations/{id}/confirm` | Confirm and deduct stock once |
@@ -189,3 +203,10 @@ The API also implements `GET /reservations/{id}`, allowing a checkout client to 
 **Verification for this revision:** Code and tests are committed. The updated full suite and GitHub Actions outcome have not yet been verified; consult the [Actions page](https://github.com/nazirreally/inventory-reservation-api/actions) for the latest workflow result. No claim of a green build is made for this commit.
 
 **Tradeoff:** The read endpoint reveals reservation metadata to anyone who knows an ID. This portfolio demo is not suitable for a public deployment without authentication and tenant-scoped authorization.
+
+
+## November 23, 2026 — import repair and multi-SKU preflight
+
+A fresh source inspection found `ReserveInput` malformed in the repository: its SKU validation expression was unterminated, and the quantity field was absent. The model has been repaired with a validated SKU, positive quantity and bounded TTL. The new `POST /inventory/availability` endpoint provides consistent read-only cart availability, aggregates repeated SKU lines, handles missing products explicitly and never reserves stock. Four integration tests were added for duplicate lines, missing SKUs, invalid requests and expired holds.
+
+**Verification:** Source, tests and documentation have been committed. Full pytest and CI outcomes for these commits are not yet verified; inspect [GitHub Actions](https://github.com/nazirreally/inventory-reservation-api/actions) before relying on this revision. This is a single-database portfolio demonstration, not a production checkout service.
