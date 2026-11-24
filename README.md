@@ -43,6 +43,7 @@ flowchart LR
 - **Confirmation:** reduces physical stock once and transitions a reservation to confirmed.
 - **Release:** returns unconfirmed held units to availability; an already-expired hold cannot be released as if it were active.
 - **Inventory protection:** rejects stock updates below currently active holds.
+- **Atomic inventory batch reconciliation:** updates up to 100 distinct SKUs together, rejecting the entire request when any proposed stock value would undercut live holds. No partial writes.
 - **Operational reconciliation:** reports per-SKU stock, live holds, available units, and invariant violations.
 - **Multi-SKU cart preflight:** checks up to 100 requested lines in one consistent SQLite read snapshot, aggregates duplicate SKUs, reports missing SKUs without failing the entire request, and explicitly does not reserve stock.
 - **Reservation status lookup:** read a hold or its terminal state by ID; expired active holds are shown as expired without changing the database.
@@ -107,6 +108,7 @@ The response includes `can_fulfill`, an `as_of` Unix timestamp and one row per d
 | Method | Path | Behavior |
 |---|---|---|
 | `PUT` | `/inventory` | Create/update physical stock |
+| `PUT` | `/inventory/batch` | Atomically update 1–100 distinct SKUs, rejecting unsafe stock changes |
 | `GET` | `/inventory/{sku}` | Get available stock |
 | `POST` | `/inventory/availability` | Advisory multi-SKU cart availability snapshot (no reservation) |
 | `POST` | `/reservations` | Create idempotent hold |
@@ -210,3 +212,20 @@ The API also implements `GET /reservations/{id}`, allowing a checkout client to 
 A fresh source inspection found `ReserveInput` malformed in the repository: its SKU validation expression was unterminated, and the quantity field was absent. The model has been repaired with a validated SKU, positive quantity and bounded TTL. The new `POST /inventory/availability` endpoint provides consistent read-only cart availability, aggregates repeated SKU lines, handles missing products explicitly and never reserves stock. Four integration tests were added for duplicate lines, missing SKUs, invalid requests and expired holds.
 
 **Verification:** Source, tests and documentation have been committed. Full pytest and CI outcomes for these commits are not yet verified; inspect [GitHub Actions](https://github.com/nazirreally/inventory-reservation-api/actions) before relying on this revision. This is a single-database portfolio demonstration, not a production checkout service.
+
+## November 24, 2026 — transactional multi-SKU stock reconciliation
+
+**Business problem.** Warehouse imports often deliver a stock count for several products at once. Updating one SKU at a time can leave a partially applied inventory snapshot if a later row conflicts with an active checkout reservation.
+
+**Implemented:** `PUT /inventory/batch` accepts 1–100 stock records with the same SKU and nonnegative stock validation as the single-SKU endpoint. It rejects repeated SKUs with HTTP 422. A SQLite `BEGIN IMMEDIATE` transaction expires stale holds, validates *every* requested stock value against live reservations, and only then applies all updates. A single insufficient-stock conflict returns HTTP 409 and rolls back the entire batch, including any expiry materialization. This endpoint sets **absolute physical stock**; it does not add stock and is not an order or payment API.
+
+```bash
+curl -X PUT http://localhost:8000/inventory/batch \
+  -H 'Content-Type: application/json' \
+  -d '{"items":[{"sku":"coffee","stock":25},{"sku":"tea","stock":18}]}'
+# {"updated":2,"items":[{"sku":"coffee","stock":25},{"sku":"tea","stock":18}]}
+```
+
+**Testing:** Five new integration tests cover successful updates, rollback when one SKU conflicts with a live hold, duplicate SKU rejection, malformed/boundary inputs, and expired holds. Run `pytest -q tests/test_api.py` and `pytest -q`. These tests have been committed but **were not executed in this run**, because the execution environment could not clone the repository. The GitHub Actions result for this revision is not verified; check [CI](https://github.com/nazirreally/inventory-reservation-api/actions).
+
+**Tradeoffs:** A batch is limited to 100 items to bound SQLite write-lock duration; it is atomic only within one SQLite database, not across services. Requests are not authenticated, and there is no import job history or external warehouse synchronization. Future work: operator authentication, durable stock-adjustment audit ledger, and PostgreSQL-backed reconciliation.
