@@ -93,6 +93,49 @@ def cart_availability(request: CartAvailabilityInput):
     return {'can_fulfill': all(item['sufficient'] for item in rows), 'items': rows,
             'as_of': now, 'note': 'Advisory snapshot only; reserve atomically before checkout'}
 
+class InventoryBatchInput(BaseModel):
+    """A bounded, all-or-nothing physical stock reconciliation request."""
+    items: list[StockInput] = Field(min_length=1, max_length=100)
+
+
+@app.put('/inventory/batch')
+def put_inventory_batch(request: InventoryBatchInput):
+    """Atomically replace stock for multiple SKUs.
+
+    Rejects duplicate SKUs, and validates all active holds before any write.
+    The transaction serializes against reservation and confirmation writers.
+    """
+    items = request.items
+    seen = set()
+    for item in items:
+        if item.sku in seen:
+            raise HTTPException(422, f'Duplicate SKU in batch: {item.sku}')
+        seen.add(item.sku)
+    with connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        now = int(time.time())
+        expire(db, now)
+        for item in items:
+            held = db.execute(
+                "SELECT COALESCE(SUM(quantity),0) FROM reservations "
+                "WHERE sku=? AND status='active' AND expires_at > ?",
+                (item.sku, now),
+            ).fetchone()[0]
+            if item.stock < held:
+                db.rollback()
+                raise HTTPException(
+                    409, f'Stock for {item.sku} cannot be lower than active reservations'
+                )
+        for item in items:
+            db.execute(
+                'INSERT INTO inventory(sku,stock) VALUES(?,?) '
+                'ON CONFLICT(sku) DO UPDATE SET stock=excluded.stock',
+                (item.sku, item.stock),
+            )
+        db.commit()
+    return {'updated': len(items), 'items': [item.model_dump() for item in items]}
+
+
 @app.put('/inventory')
 def put_inventory(item: StockInput):
     with connection() as db:
