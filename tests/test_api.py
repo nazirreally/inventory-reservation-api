@@ -215,3 +215,61 @@ def test_cart_preflight_expired_holds_are_not_counted(client, monkeypatch):
     assert response.status_code == 200
     assert response.json()['can_fulfill'] is True
     assert response.json()['items'][0]['available'] == 5
+
+
+def test_batch_inventory_atomic_success(client):
+    stock(client, 5)
+    response = client.put('/inventory/batch', json={'items': [
+        {'sku': 'widget', 'stock': 12}, {'sku': 'new', 'stock': 7}
+    ]})
+    assert response.status_code == 200
+    assert response.json()['updated'] == 2
+    assert client.get('/inventory/widget').json()['available'] == 12
+    assert client.get('/inventory/new').json()['available'] == 7
+
+
+def test_batch_inventory_rolls_back_when_any_hold_would_be_violated(client):
+    stock(client, 5)
+    assert reserve(client, key='batch-hold', qty=4).status_code == 201
+    response = client.put('/inventory/batch', json={'items': [
+        {'sku': 'new', 'stock': 8}, {'sku': 'widget', 'stock': 3}
+    ]})
+    assert response.status_code == 409
+    assert client.get('/inventory/new').status_code == 404
+    assert client.get('/inventory/widget').json()['available'] == 1
+
+
+def test_batch_inventory_duplicate_sku_rejected_without_writes(client):
+    response = client.put('/inventory/batch', json={'items': [
+        {'sku': 'new', 'stock': 1}, {'sku': 'new', 'stock': 9}
+    ]})
+    assert response.status_code == 422
+    assert client.get('/inventory/new').status_code == 404
+
+
+def test_batch_inventory_validation_rejects_empty_oversized_and_bad_stock(client):
+    invalid = [
+        {'items': []},
+        {'items': [{'sku': 'x', 'stock': 1}] * 101},
+        {'items': [{'sku': 'x', 'stock': -1}]},
+        {'items': [{'sku': '../x', 'stock': 1}]},
+    ]
+    for payload in invalid:
+        assert client.put('/inventory/batch', json=payload).status_code == 422
+
+
+def test_batch_inventory_expired_holds_do_not_block_reconciliation(client, monkeypatch):
+    import app.main as m
+    stock(client, 5)
+    now = int(m.time.time())
+    monkeypatch.setattr(m.time, 'time', lambda: now)
+    created = client.post('/reservations', json={
+        'sku': 'widget', 'quantity': 5, 'ttl_seconds': 1
+    }, headers={'Idempotency-Key': 'batch-expiry'})
+    assert created.status_code == 201
+    monkeypatch.setattr(m.time, 'time', lambda: now + 2)
+    response = client.put('/inventory/batch', json={'items': [
+        {'sku': 'widget', 'stock': 2}
+    ]})
+    assert response.status_code == 200
+    assert client.get('/inventory/widget').json()['available'] == 2
